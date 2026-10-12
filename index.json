@@ -7,12 +7,15 @@
     "code": 3,
     "version": "14.3",
     "nsfw": 0,
+    "hasReadme": 0,
+    "hasChangelog": 0,
     "sources": [
       {
         "name": "VoirAnime",
         "lang": "fr",
         "id": "5371141424049189102",
-        "baseUrl": "https://voir-anime.to"
+        "baseUrl": "https://voir-anime.to",
+        "versionId": 1
       }
     ]
   },
@@ -24,29 +27,15 @@
     "code": 3,
     "version": "14.3",
     "nsfw": 0,
+    "hasReadme": 0,
+    "hasChangelog": 0,
     "sources": [
       {
         "name": "VoirAnime VF",
         "lang": "fr",
         "id": "1158115463226191401",
-        "baseUrl": "https://voir-anime.to"
-      }
-    ]
-  },
-  {
-    "name": "Aniyomi: VoirAnimeVOSTFR",
-    "pkg": "eu.kanade.tachiyomi.animeextension.fr.voiranimevostfr",
-    "apk": "aniyomi-fr.voiranimevostfr-v14.3.apk",
-    "lang": "fr",
-    "code": 3,
-    "version": "14.3",
-    "nsfw": 0,
-    "sources": [
-      {
-        "name": "VoirAnime VOSTFR",
-        "lang": "fr",
-        "id": "4479846079123069454",
-        "baseUrl": "https://voir-anime.to"
+        "baseUrl": "https://voir-anime.to",
+        "versionId": 1
       }
     ]
   }
