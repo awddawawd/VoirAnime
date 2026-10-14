@@ -33,12 +33,16 @@ class VidmolyExtractor(private val client: OkHttpClient) {
         if (videoUrl == null) return emptyList()
 
         if (videoUrl.contains(".m3u8")) {
-            val hlsVideos = playlistUtils.extractFromHls(
-                videoUrl,
-                referer = url,
-                videoNameGen = { q -> "$quality - $q" },
-                subtitleList = subtitleList,
-            )
+            val hlsVideos = try {
+                playlistUtils.extractFromHls(
+                    videoUrl,
+                    referer = url,
+                    videoNameGen = { q -> "$quality - $q" },
+                    subtitleList = subtitleList,
+                )
+            } catch (_: Exception) {
+                emptyList()
+            }
             if (hlsVideos.isNotEmpty()) return hlsVideos
         }
 

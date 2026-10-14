@@ -26,11 +26,8 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import rx.Observable
 import java.text.SimpleDateFormat
-import java.util.Collections
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
 
 class VoirAnime : ParsedAnimeHttpSource() {
 
@@ -252,62 +249,6 @@ class VoirAnime : ParsedAnimeHttpSource() {
     }
 
     // ============================ VIDEO LINKS ============================
-
-    override fun fetchVideoList(episode: SEpisode): rx.Observable<List<Video>> = rx.Observable.create { subscriber ->
-        try {
-            val response = client.newCall(videoListRequest(episode)).execute()
-            val body = response.body.string()
-            val document = Jsoup.parse(body, response.request.url.toString())
-            val scriptElement = document.select("script").firstOrNull {
-                it.data().contains("thisChapterSources")
-            }
-            if (scriptElement == null) {
-                subscriber.onNext(emptyList())
-                subscriber.onCompleted()
-                return@create
-            }
-
-            val pattern = """"([^"]*LECTEUR[^"]*)"\s*:\s*"<iframe[^>]+src=\\?["']([^"']+)""".toRegex(RegexOption.IGNORE_CASE)
-            val matches = pattern.findAll(scriptElement.data()).toList()
-            if (matches.isEmpty()) {
-                subscriber.onNext(emptyList())
-                subscriber.onCompleted()
-                return@create
-            }
-
-            val allVideos = java.util.Collections.synchronizedList(mutableListOf<Video>())
-            val hasEmittedFirst = java.util.concurrent.atomic.AtomicBoolean(false)
-
-            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-                val scope = this
-                val jobs = matches.map { match ->
-                    scope.async {
-                        val extracted = extractReader(match)
-                        if (extracted.isNotEmpty()) {
-                            allVideos.addAll(extracted)
-                            val directStreams = extracted.filter { !it.quality.contains("http", ignoreCase = true) }
-                            if (directStreams.isNotEmpty() && hasEmittedFirst.compareAndSet(false, true)) {
-                                if (!subscriber.isUnsubscribed) {
-                                    subscriber.onNext(directStreams)
-                                }
-                            }
-                        }
-                    }
-                }
-                jobs.awaitAll()
-            }
-
-            val sorted = allVideos.sortedBy { it.quality.contains("http", ignoreCase = true) }
-            if (!subscriber.isUnsubscribed) {
-                subscriber.onNext(sorted)
-                subscriber.onCompleted()
-            }
-        } catch (e: Exception) {
-            if (!subscriber.isUnsubscribed) {
-                subscriber.onError(e)
-            }
-        }
-    }
 
     override fun videoListParse(response: Response): List<Video> {
         val body = response.body.string()
