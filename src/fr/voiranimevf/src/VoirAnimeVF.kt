@@ -15,6 +15,10 @@ import eu.kanade.tachiyomi.lib.voeextractor.VoeExtractor
 import eu.kanade.tachiyomi.lib.youruploadextractor.YourUploadExtractor
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.Request
@@ -22,8 +26,11 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import rx.Observable
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 class VoirAnimeVF : ParsedAnimeHttpSource() {
 
@@ -249,85 +256,133 @@ class VoirAnimeVF : ParsedAnimeHttpSource() {
 
     // ============================ VIDEO LINKS ============================
 
+    override fun fetchVideoList(episode: SEpisode): rx.Observable<List<Video>> = rx.Observable.create { subscriber ->
+        try {
+            val response = client.newCall(videoListRequest(episode)).execute()
+            val body = response.body.string()
+            val document = Jsoup.parse(body, response.request.url.toString())
+            val scriptElement = document.select("script").firstOrNull {
+                it.data().contains("thisChapterSources")
+            }
+            if (scriptElement == null) {
+                subscriber.onNext(emptyList())
+                subscriber.onCompleted()
+                return@create
+            }
+
+            val pattern = """"([^"]*LECTEUR[^"]*)"\s*:\s*"<iframe[^>]+src=\\?["']([^"']+)""".toRegex(RegexOption.IGNORE_CASE)
+            val matches = pattern.findAll(scriptElement.data()).toList()
+            if (matches.isEmpty()) {
+                subscriber.onNext(emptyList())
+                subscriber.onCompleted()
+                return@create
+            }
+
+            val allVideos = java.util.Collections.synchronizedList(mutableListOf<Video>())
+            val hasEmittedFirst = java.util.concurrent.atomic.AtomicBoolean(false)
+
+            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                val scope = this
+                val jobs = matches.map { match ->
+                    scope.async {
+                        val extracted = extractReader(match)
+                        if (extracted.isNotEmpty()) {
+                            allVideos.addAll(extracted)
+                            val directStreams = extracted.filter { !it.quality.contains("http", ignoreCase = true) }
+                            if (directStreams.isNotEmpty() && hasEmittedFirst.compareAndSet(false, true)) {
+                                if (!subscriber.isUnsubscribed) {
+                                    subscriber.onNext(directStreams)
+                                }
+                            }
+                        }
+                    }
+                }
+                jobs.awaitAll()
+            }
+
+            val sorted = allVideos.sortedBy { it.quality.contains("http", ignoreCase = true) }
+            if (!subscriber.isUnsubscribed) {
+                subscriber.onNext(sorted)
+                subscriber.onCompleted()
+            }
+        } catch (e: Exception) {
+            if (!subscriber.isUnsubscribed) {
+                subscriber.onError(e)
+            }
+        }
+    }
+
     override fun videoListParse(response: Response): List<Video> {
         val body = response.body.string()
-
         val document = Jsoup.parse(body, response.request.url.toString())
         val scriptElement = document.select("script").firstOrNull {
             it.data().contains("thisChapterSources")
         } ?: return emptyList()
 
-        val scriptText = scriptElement.data()
-
         val pattern = """"([^"]*LECTEUR[^"]*)"\s*:\s*"<iframe[^>]+src=\\?["']([^"']+)""".toRegex(RegexOption.IGNORE_CASE)
-        val matches = pattern.findAll(scriptText).toList()
+        val matches = pattern.findAll(scriptElement.data()).toList()
+        if (matches.isEmpty()) return emptyList()
 
-        val videos = mutableListOf<Video>()
-
-        for (match in matches) {
-            val fullName = match.groupValues[1].trim()
-            var iframeSrc = match.groupValues[2].replace("\\/", "/").removeSuffix("\\").trim()
-
-            if (iframeSrc.startsWith("//")) {
-                iframeSrc = "https:$iframeSrc"
-            }
-
-            val shortName = fullName.replace("LECTEUR", "", ignoreCase = true).trim()
-
-            // Fallback : lien cliquable/lisible au lieu d’une erreur
-            val fallbackVideo = Video(iframeSrc, "$shortName - $iframeSrc", iframeSrc)
-
-            try {
-                when {
-                    iframeSrc.contains("vidmoly", ignoreCase = true) || fullName.contains("Vidmoly", ignoreCase = true) -> {
-                        val extracted = VidmolyExtractor(client).videosFromUrl(iframeSrc, quality = "$shortName - Vidmoly")
-                        if (extracted.isEmpty()) {
-                            videos.add(fallbackVideo)
-                        } else videos.addAll(extracted)
-                    }
-                    iframeSrc.contains("voe", ignoreCase = true) -> {
-                        val extracted = VoeExtractor(client).videosFromUrl(iframeSrc)
-                        if (extracted.isEmpty()) {
-                            videos.add(fallbackVideo)
-                        } else videos.addAll(extracted)
-                    }
-                    iframeSrc.contains("streamtape", ignoreCase = true) || iframeSrc.contains("stape", ignoreCase = true) -> {
-                        val extracted = StreamTapeExtractor(client).videosFromUrl(iframeSrc)
-                        if (extracted.isEmpty()) {
-                            videos.add(fallbackVideo)
-                        } else videos.addAll(extracted)
-                    }
-                    iframeSrc.contains("moon", ignoreCase = true) || fullName.contains("MOON", ignoreCase = true) || iframeSrc.contains("weneverbeenfree", ignoreCase = true) -> {
-                        val extracted = FilemoonExtractor(client).videosFromUrl(iframeSrc, prefix = "$shortName - ", headers = headers)
-                        if (extracted.isEmpty()) {
-                            videos.add(fallbackVideo)
-                        } else videos.addAll(extracted)
-                    }
-                    iframeSrc.contains("streamhide", ignoreCase = true) || fullName.contains("SB", ignoreCase = true) -> {
-                        val extracted = StreamHideVidExtractor(client).videosFromUrl(iframeSrc, prefix = "$shortName - ")
-                        if (extracted.isEmpty()) {
-                            videos.add(fallbackVideo)
-                        } else videos.addAll(extracted)
-                    }
-                    iframeSrc.contains("yourupload", ignoreCase = true) || fullName.contains("YU", ignoreCase = true) -> {
-                        val extracted = YourUploadExtractor(client).videoFromUrl(iframeSrc, headers = headers)
-                        if (extracted.isEmpty()) {
-                            videos.add(fallbackVideo)
-                        } else videos.addAll(extracted)
-                    }
-                    else -> {
-                        // Pour myTV, FHD1, ou tout autre lecteur sans extracteur
-                        videos.add(fallbackVideo)
-                    }
-                }
-            } catch (e: Exception) {
-                // En cas d'erreur réseau ou blocage Cloudflare
-                videos.add(fallbackVideo)
-            }
+        val allVideos = kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+            val scope = this
+            matches.map { match ->
+                scope.async { extractReader(match) }
+            }.awaitAll().flatten()
         }
 
-        // Tri : les vraies vidéos extraites en haut, les liens de secours en bas
-        return videos.sortedBy { it.quality.contains("http", ignoreCase = true) }
+        return allVideos.sortedBy { it.quality.contains("http", ignoreCase = true) }
+    }
+
+    private fun extractReader(match: MatchResult): List<Video> {
+        val fullName = match.groupValues[1].trim()
+        var iframeSrc = match.groupValues[2].replace("\\/", "/").removeSuffix("\\").trim()
+
+        if (iframeSrc.startsWith("//")) {
+            iframeSrc = "https:$iframeSrc"
+        }
+
+        val shortName = fullName.replace("LECTEUR", "", ignoreCase = true).trim()
+        val fallbackVideo = Video(iframeSrc, "$shortName - $iframeSrc", iframeSrc)
+
+        return try {
+            when {
+                iframeSrc.contains("vidmoly", ignoreCase = true) || fullName.contains("Vidmoly", ignoreCase = true) ||
+                    iframeSrc.contains("voembed", ignoreCase = true) || fullName.contains("myTV", ignoreCase = true) -> {
+                    val qualityName = if (fullName.contains("myTV", ignoreCase = true) || iframeSrc.contains("voembed", ignoreCase = true)) {
+                        "$shortName - myTV"
+                    } else {
+                        "$shortName - Vidmoly"
+                    }
+                    val extracted = VidmolyExtractor(client).videosFromUrl(iframeSrc, quality = qualityName)
+                    if (extracted.isEmpty()) listOf(fallbackVideo) else extracted
+                }
+                iframeSrc.contains("voe", ignoreCase = true) -> {
+                    val extracted = VoeExtractor(client).videosFromUrl(iframeSrc)
+                    if (extracted.isEmpty()) listOf(fallbackVideo) else extracted
+                }
+                iframeSrc.contains("streamtape", ignoreCase = true) || iframeSrc.contains("stape", ignoreCase = true) -> {
+                    val extracted = StreamTapeExtractor(client).videosFromUrl(iframeSrc)
+                    if (extracted.isEmpty()) listOf(fallbackVideo) else extracted
+                }
+                iframeSrc.contains("moon", ignoreCase = true) || fullName.contains("MOON", ignoreCase = true) || iframeSrc.contains("weneverbeenfree", ignoreCase = true) -> {
+                    val extracted = FilemoonExtractor(client).videosFromUrl(iframeSrc, prefix = "$shortName - ", headers = headers)
+                    if (extracted.isEmpty()) listOf(fallbackVideo) else extracted
+                }
+                iframeSrc.contains("streamhide", ignoreCase = true) || fullName.contains("SB", ignoreCase = true) -> {
+                    val extracted = StreamHideVidExtractor(client).videosFromUrl(iframeSrc, prefix = "$shortName - ")
+                    if (extracted.isEmpty()) listOf(fallbackVideo) else extracted
+                }
+                iframeSrc.contains("yourupload", ignoreCase = true) || fullName.contains("YU", ignoreCase = true) -> {
+                    val extracted = YourUploadExtractor(client).videoFromUrl(iframeSrc, headers = headers)
+                    if (extracted.isEmpty()) listOf(fallbackVideo) else extracted
+                }
+                else -> {
+                    listOf(fallbackVideo)
+                }
+            }
+        } catch (_: Exception) {
+            listOf(fallbackVideo)
+        }
     }
 
     override fun videoUrlParse(document: Document): String = throw UnsupportedOperationException("Not used")

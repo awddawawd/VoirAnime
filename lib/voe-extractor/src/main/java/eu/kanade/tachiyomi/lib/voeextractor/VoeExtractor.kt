@@ -81,8 +81,8 @@ class VoeExtractor(private val client: OkHttpClient) {
             )
         }
 
-        // Add direct MP4 fallback if available
-        if (mp4Url != null) {
+        // Add direct MP4 fallback if available (only when HLS is unavailable or yields no streams)
+        if (videos.isEmpty() && mp4Url != null) {
             videos.add(Video(mp4Url, "${prefix}Voe: MP4", mp4Url))
         }
 
