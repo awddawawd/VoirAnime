@@ -40,16 +40,18 @@ class FilemoonExtractor(private val client: OkHttpClient) {
                 ?: return emptyList()
 
             val baseHeadersBuilder = Headers.Builder()
-                .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0")
-                .set("Accept", "*/*")
-                .set("Content-Type", "application/json")
-                .set("Origin", baseUrl)
-                .set("Referer", "$baseUrl/e/$videoCode")
             if (headers != null) {
                 for ((name, value) in headers) {
                     baseHeadersBuilder.set(name, value)
                 }
             }
+            // Ensure Filemoon-specific headers are preserved
+            baseHeadersBuilder
+                .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0")
+                .set("Accept", "*/*")
+                .set("Content-Type", "application/json")
+                .set("Origin", baseUrl)
+                .set("Referer", "$baseUrl/e/$videoCode")
             val reqHeaders = baseHeadersBuilder.build()
 
             // 1. Load embed page and locate bundle URLs
@@ -88,12 +90,21 @@ class FilemoonExtractor(private val client: OkHttpClient) {
             signature.update(nonce.toByteArray())
             val derSig = signature.sign()
 
-            // Convert DER to raw r||s (IEEE P1363, 64 bytes)
+            // Convert DER to raw r||s (IEEE P1363, strictly 64 bytes: 32 bytes r + 32 bytes s)
             val rLen = derSig[3].toInt() and 0xFF
-            val r = derSig.copyOfRange(4, 4 + rLen)
+            val rRaw = derSig.copyOfRange(4, 4 + rLen)
             val sLen = derSig[4 + rLen + 1].toInt() and 0xFF
-            val s = derSig.copyOfRange(4 + rLen + 2, 4 + rLen + 2 + sLen)
-            val rawSig = r + s
+            val sRaw = derSig.copyOfRange(4 + rLen + 2, 4 + rLen + 2 + sLen)
+
+            fun toFixed32(bytes: ByteArray): ByteArray {
+                return when {
+                    bytes.size > 32 -> bytes.copyOfRange(bytes.size - 32, bytes.size)
+                    bytes.size < 32 -> ByteArray(32 - bytes.size) + bytes
+                    else -> bytes
+                }
+            }
+
+            val rawSig = toFixed32(rRaw) + toFixed32(sRaw)
             val signatureB64 = Base64.encodeToString(rawSig, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
 
             // Build JWK
@@ -131,8 +142,19 @@ class FilemoonExtractor(private val client: OkHttpClient) {
             val attestJson = json.parseToJsonElement(attestRes.body?.string() ?: return emptyList()).jsonObject
             val attestToken = attestJson["token"]?.jsonPrimitive?.content ?: return emptyList()
             val confidence = attestJson["confidence"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.95
-            val viewerId = attestRes.header("Set-Cookie")?.let { extractCookie(it, "byse_viewer_id") } ?: ""
-            val deviceId = attestRes.header("Set-Cookie")?.let { extractCookie(it, "byse_device_id") } ?: ""
+
+            var viewerId = ""
+            var deviceId = ""
+            for (cookieHeader in attestRes.headers("Set-Cookie")) {
+                for (part in cookieHeader.split(";")) {
+                    val trimmed = part.trim()
+                    if (trimmed.startsWith("byse_viewer_id=")) {
+                        viewerId = trimmed.substringAfter("byse_viewer_id=")
+                    } else if (trimmed.startsWith("byse_device_id=")) {
+                        deviceId = trimmed.substringAfter("byse_device_id=")
+                    }
+                }
+            }
 
             // 4. CAPTCHA / PoW challenge
             val captchaHeaders = reqHeaders.newBuilder()
@@ -235,25 +257,57 @@ class FilemoonExtractor(private val client: OkHttpClient) {
     // --------------- PoW solver ---------------
 
     private fun solvePow(token: String, difficultyBits: Int): Long {
-        val buffer = StringBuilder()
+        var prefE0 = 1779033703
+        var prefE1 = 3144134277.toInt()
+        var prefE2 = 1013904242
+        var prefE3 = 2773480762.toInt()
+
+        // Precompute prefix (token + ':') once
+        val prefix = "$token:"
+        val prefixLen = prefix.length
+        for (i in 0 until prefixLen) {
+            prefE0 += prefix[i].code and 0xFF
+            prefE0 = rotl32(prefE0, 7)
+            prefE0 += prefE1
+            prefE3 = rotl32(prefE3 xor prefE0, 16)
+            prefE2 += prefE3
+            prefE1 = rotl32(prefE1 xor prefE2, 12)
+            prefE0 += prefE1
+            prefE3 = rotl32(prefE3 xor prefE0, 8)
+            prefE2 += prefE3
+            prefE1 = rotl32(prefE1 xor prefE2, 7)
+        }
+
+        val r = IntArray(512)
+        val n = IntArray(8)
+        val nonceChars = CharArray(16)
         var nonce = 0L
+
         while (nonce < 0xFFFFFFFFL) {
-            buffer.clear()
-            buffer.append(token).append(':').append(nonce)
-            val msg = buffer.toString()
-            val len = msg.length
+            var e0 = prefE0
+            var e1 = prefE1
+            var e2 = prefE2
+            var e3 = prefE3
 
-            // State
-            var e0 = 1779033703
-            var e1 = 3144134277.toInt()
-            var e2 = 1013904242
-            var e3 = 2773480762.toInt()
+            var temp = nonce
+            var nonceLen = 0
+            if (temp == 0L) {
+                nonceChars[0] = '0'
+                nonceLen = 1
+            } else {
+                var pos = 15
+                while (temp > 0L) {
+                    nonceChars[pos--] = ('0'.code + (temp % 10).toInt()).toChar()
+                    temp /= 10
+                }
+                val start = pos + 1
+                nonceLen = 16 - start
+                System.arraycopy(nonceChars, start, nonceChars, 0, nonceLen)
+            }
 
-            // Byte mixing
-            for (i in 0 until len) {
-                e0 += msg[i].code.toInt() and 0xFF
+            for (i in 0 until nonceLen) {
+                e0 += nonceChars[i].code and 0xFF
                 e0 = rotl32(e0, 7)
-                // quarter round macro
                 e0 += e1
                 e3 = rotl32(e3 xor e0, 16)
                 e2 += e3
@@ -276,7 +330,6 @@ class FilemoonExtractor(private val client: OkHttpClient) {
                 e1 = rotl32(e1 xor e2, 7)
             }
 
-            val r = IntArray(512)
             // Initialize memory
             for (i in 0 until 512) {
                 e0 += e1
@@ -296,10 +349,9 @@ class FilemoonExtractor(private val client: OkHttpClient) {
                     val a = r[s] and 511
                     var c = r[s] + r[a]
                     c = rotl32(c, 13)
-                    c = c xor ( ( (r[(s + 1) and 511].toLong() and 0xFFFFFFFFL) * 2654435761L).toInt() )
+                    c = c xor (((r[(s + 1) and 511].toLong() and 0xFFFFFFFFL) * 2654435761L).toInt())
                     r[s] = c
                     e0 = e0 xor c
-                    // quarter round
                     e0 += e1
                     e3 = rotl32(e3 xor e0, 16)
                     e2 += e3
@@ -311,7 +363,6 @@ class FilemoonExtractor(private val client: OkHttpClient) {
                 }
             }
 
-            val n = IntArray(8)
             for (i in 0 until 8) {
                 e0 += e1
                 e3 = rotl32(e3 xor e0, 16)
@@ -327,7 +378,7 @@ class FilemoonExtractor(private val client: OkHttpClient) {
                     val d = r[base + cIdx]
                     sVal += d
                     sVal = rotl32(sVal, 5)
-                    sVal = sVal xor ( ( (d.toLong() and 0xFFFFFFFFL) * 2246822519L).toInt() )
+                    sVal = sVal xor (((d.toLong() and 0xFFFFFFFFL) * 2246822519L).toInt())
                 }
                 n[i] = sVal xor e2
             }
