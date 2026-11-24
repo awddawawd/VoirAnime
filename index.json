@@ -2,10 +2,10 @@
   {
     "name": "Aniyomi: VoirAnime",
     "pkg": "eu.kanade.tachiyomi.animeextension.fr.voiranime",
-    "apk": "aniyomi-fr.voiranime-v14.6.apk",
+    "apk": "aniyomi-fr.voiranime-v14.7.apk",
     "lang": "fr",
-    "code": 6,
-    "version": "14.6",
+    "code": 7,
+    "version": "14.7",
     "nsfw": 0,
     "hasReadme": 0,
     "hasChangelog": 0,
@@ -14,7 +14,7 @@
         "name": "VoirAnime",
         "lang": "fr",
         "id": "5371141424049189102",
-        "baseUrl": "https://voir-anime.to",
+        "baseUrl": "https://voiranime.cx",
         "versionId": 1
       }
     ]
@@ -22,10 +22,10 @@
   {
     "name": "Aniyomi: VoirAnimeVF",
     "pkg": "eu.kanade.tachiyomi.animeextension.fr.voiranimevf",
-    "apk": "aniyomi-fr.voiranimevf-v14.6.apk",
+    "apk": "aniyomi-fr.voiranimevf-v14.7.apk",
     "lang": "fr",
-    "code": 6,
-    "version": "14.6",
+    "code": 7,
+    "version": "14.7",
     "nsfw": 0,
     "hasReadme": 0,
     "hasChangelog": 0,
@@ -34,7 +34,7 @@
         "name": "VoirAnime VF",
         "lang": "fr",
         "id": "1158115463226191401",
-        "baseUrl": "https://voir-anime.to",
+        "baseUrl": "https://voiranime.cx",
         "versionId": 1
       }
     ]
