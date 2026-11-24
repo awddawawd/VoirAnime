@@ -1,5 +1,11 @@
 package eu.kanade.tachiyomi.animeextension.fr.voiranimevf
 
+import android.app.Application
+import android.content.SharedPreferences
+import android.widget.Toast
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
+import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
@@ -26,15 +32,22 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class VoirAnimeVF : ParsedAnimeHttpSource() {
+class VoirAnimeVF : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override val name = "VoirAnime VF"
-    override val baseUrl = "https://voir-anime.to"
+    override val baseUrl: String
+        get() = normalizeUrl(preferences.getString(PREF_BASE_URL_KEY, DEFAULT_BASE_URL))
     override val lang = "fr"
     override val supportsLatest = false
+
+    private val preferences: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    }
 
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
@@ -329,4 +342,47 @@ class VoirAnimeVF : ParsedAnimeHttpSource() {
     override fun videoUrlParse(document: Document): String = throw UnsupportedOperationException("Not used")
     override fun videoListSelector(): String = throw UnsupportedOperationException("Not used")
     override fun videoFromElement(element: Element): Video = throw UnsupportedOperationException("Not used")
+
+    // ============================== SETTINGS ==============================
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = PREF_BASE_URL_KEY
+            title = "Adresse du site (URL)"
+            summary = "Adresse actuelle : $baseUrl"
+            setDefaultValue(DEFAULT_BASE_URL)
+            dialogTitle = "Adresse du site"
+            dialogMessage = "Entrez l'URL de base du site (par défaut : $DEFAULT_BASE_URL). Laissez vide pour réinitialiser."
+
+            setOnPreferenceChangeListener { preference, newValue ->
+                val normalized = normalizeUrl(newValue as? String)
+                val saved = preferences.edit().putString(PREF_BASE_URL_KEY, normalized).commit()
+                if (saved) {
+                    (preference as? EditTextPreference)?.text = normalized
+                    preference.summary = "Adresse actuelle : $normalized"
+                    Toast.makeText(
+                        screen.context,
+                        "Redémarrer Aniyomi pour appliquer les changements",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                false
+            }
+        }.also(screen::addPreference)
+    }
+
+    private fun normalizeUrl(raw: String?): String {
+        val cleaned = raw?.trim()?.removeSuffix("/") ?: ""
+        if (cleaned.isEmpty()) return DEFAULT_BASE_URL
+        return if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
+            cleaned
+        } else {
+            "https://$cleaned"
+        }
+    }
+
+    companion object {
+        private const val PREF_BASE_URL_KEY = "pref_base_url"
+        private const val DEFAULT_BASE_URL = "https://voiranime.cx"
+    }
 }
